@@ -1,0 +1,14 @@
+-- Privileges. Read access: `account users` already has USE CATALOG/USE SCHEMA/SELECT/EXECUTE
+-- on the catalog (Free Edition default), so the reader roles need no extra grants.
+--
+-- Pipeline: the bundle job runs as a user/service principal (run_as does not accept
+-- groups) that is a MEMBER of synthea_pipeline. It uses its own permissions (it owns
+-- the tables), so no grant is needed here.
+--
+-- Only run the block below to build silver/gold with the synthea_pipeline role
+-- ASSUMED (profile synthea-as-pipeline): the role replaces the user's permissions,
+-- and only the schema owner can replace/drop the tables inside it.
+--
+-- ALTER SCHEMA synthea.silver OWNER TO `synthea_pipeline`;
+-- ALTER SCHEMA synthea.gold   OWNER TO `synthea_pipeline`;
+-- GRANT USE SCHEMA, SELECT ON SCHEMA synthea.bronze TO `synthea_pipeline`;

@@ -1,0 +1,15 @@
+# Credentials / local Databricks config
+.databrickscfg
+.databricks/
+*.env
+.env*
+
+# Local query results (may contain data)
+outputs/
+*.json
+!databricks.json
+
+# Python
+__pycache__/
+.venv/
+*.pyc

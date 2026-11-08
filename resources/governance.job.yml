@@ -1,0 +1,19 @@
+resources:
+  jobs:
+    synthea_governance:
+      name: synthea_governance
+      description: Applies bronze tags, mask functions and ABAC policies.
+      tasks:
+        - task_key: tags_bronze
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/governance/10_tags_bronze.sql }
+        - task_key: functions
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/governance/20_functions.sql }
+        - task_key: policies
+          depends_on: [{ task_key: tags_bronze }, { task_key: functions }]
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/governance/30_policies.sql }

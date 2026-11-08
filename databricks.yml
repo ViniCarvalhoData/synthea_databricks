@@ -1,0 +1,25 @@
+bundle:
+  name: synthea_governance
+
+include:
+  - resources/*.yml
+
+variables:
+  warehouse_id:
+    description: SERVERLESS SQL warehouse (tag propagation only runs on serverless)
+    lookup:
+      warehouse: Serverless Starter Warehouse
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      # Host comes from the CLI profile in ~/.databrickscfg (kept out of the repo).
+      profile: synthea
+    # The medallion job must run as an identity exempt from the masks.
+    # run_as only accepts a user or a service principal (not a group/role), so the
+    # executing identity must be a MEMBER of the synthea_pipeline group.
+    # Default: runs as whoever deploys. With a service principal available:
+    # run_as:
+    #   service_principal_name: <application-id, member of synthea_pipeline>

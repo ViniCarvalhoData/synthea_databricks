@@ -1,0 +1,54 @@
+resources:
+  jobs:
+    synthea_medallion:
+      name: synthea_medallion
+      description: bronze -> silver -> gold. Tags come from bronze through propagation.
+      tasks:
+        - task_key: silver_patients
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/silver/01_patients_ctas.sql }
+        - task_key: silver_encounters
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/silver/02_encounters_join.sql }
+        - task_key: silver_patients_contact
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/silver/03_patients_contact_insert.sql }
+        - task_key: silver_patients_merge
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/silver/04_patients_merge.sql }
+        - task_key: silver_v_patient_contact
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/silver/05_v_patient_contact_view.sql }
+
+        - task_key: gold_dim_patient
+          depends_on: [{ task_key: silver_patients }]
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/gold/01_dim_patient.sql }
+        - task_key: gold_patient_encounter_summary
+          depends_on: [{ task_key: silver_encounters }]
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/gold/02_patient_encounter_summary.sql }
+        - task_key: gold_demographics
+          depends_on: [{ task_key: silver_patients }]
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/transformations/gold/03_demographics.sql }
+
+        - task_key: test_propagation
+          depends_on:
+            - { task_key: gold_dim_patient }
+            - { task_key: gold_patient_encounter_summary }
+            - { task_key: gold_demographics }
+            - { task_key: silver_patients_contact }
+            - { task_key: silver_patients_merge }
+            - { task_key: silver_v_patient_contact }
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file: { path: ../src/tests/10_propagation.sql }
