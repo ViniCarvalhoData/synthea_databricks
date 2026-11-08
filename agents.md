@@ -8,7 +8,8 @@ applied only to bronze, **tag propagation** carrying them to silver/gold, and
 catalog-level **ABAC policies** masking whatever is tagged.
 
 - Workspace: Databricks Free Edition, accessed through CLI profile `synthea` (host lives only in `~/.databrickscfg`, never in the repo)
-- Catalog: `synthea` | schemas: `bronze` (source), `silver`, `gold`, `governance` (functions, test tables)
+- Catalog: `synthea` | schemas: `bronze` (source), `silver`, `gold`, `governance` (functions, test tables),
+  `test` (analyst sandbox: the only schema where `synthea_analysts` can create tables)
 - Warehouse: `Serverless Starter Warehouse` (resolved by name in `databricks.yml`)
 
 ## Running SQL
@@ -36,7 +37,10 @@ Or via the bundle: `databricks bundle deploy` / `databricks bundle run synthea_m
    test `is_account_group_member(g) OR current_user() = g` (a role is not a member of itself).
 7. When adding a silver/gold scenario, add its expected rows to
    `src/tests/10_propagation.sql` and its task to `resources/medallion.job.yml`.
-8. Repository content (docs, comments, messages, object comments) is in English.
+8. **Analysts write only to `synthea.test`.** Their CTAS stores what their masks show
+   (SHA-256 for personal columns, `NULL` for sensitive ones). Grants live in
+   `src/governance/05_grants.sql`; never give `synthea_analysts` CREATE on the catalog.
+9. Repository content (docs, comments, messages, object comments) is in English.
 
 ## Layout
 ```

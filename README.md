@@ -64,6 +64,7 @@ CREATE SCHEMA  IF NOT EXISTS synthea.bronze;
 CREATE SCHEMA  IF NOT EXISTS synthea.silver;
 CREATE SCHEMA  IF NOT EXISTS synthea.gold;
 CREATE SCHEMA  IF NOT EXISTS synthea.governance;
+CREATE SCHEMA  IF NOT EXISTS synthea.test;        -- analyst sandbox (see 05_grants.sql)
 CREATE VOLUME  IF NOT EXISTS synthea.bronze.raw;
 ```
 
@@ -104,7 +105,7 @@ Free Edition has no account API, so create the groups in the UI (**Settings > Id
 | `synthea_pipeline` | builds silver/gold; exempt from every mask. **Add yourself to it**, or the pipeline writes `***` into the tables |
 | `synthea_pii_readers` | sees personal columns in the clear |
 | `synthea_sensitive_readers` | sees sensitive columns in the clear |
-| `synthea_analysts` | sees personal columns pseudonymized (SHA-256) |
+| `synthea_analysts` | sees personal columns pseudonymized (SHA-256); can create tables only in `synthea.test` |
 
 With Account Console access (not available on Free Edition), `src/scripts/setup_identities.ps1` creates the groups and a pipeline service principal for you:
 
@@ -120,8 +121,8 @@ pwsh ./src/scripts/setup_identities.ps1 -WorkspaceId <workspace-id>
 The `uv run` commands are the same in PowerShell, Git Bash and WSL. `run_sql.py` expands wildcards like `silver/*.sql` itself, because PowerShell passes them through unexpanded.
 
 ```bash
-# 1. governance: bronze tags, functions, policies
-uv run src/scripts/run_sql.py src/governance/10_tags_bronze.sql src/governance/20_functions.sql src/governance/30_policies.sql
+# 1. governance: grants, bronze tags, functions, policies
+uv run src/scripts/run_sql.py src/governance/05_grants.sql src/governance/10_tags_bronze.sql src/governance/20_functions.sql src/governance/30_policies.sql
 
 # 2. medallion (run as an identity that is a member of synthea_pipeline!)
 uv run src/scripts/run_sql.py src/transformations/silver/*.sql src/transformations/gold/*.sql
@@ -179,6 +180,7 @@ With a role assumed, `current_user()` returns the group name and `is_account_gro
 
 - **Propagation: 33/33 OK, no extra tags.** Tags showed up within seconds for CTAS, JOIN, INSERT, MERGE, VIEW and the second hop into gold, even with gold running right after silver. Untagged columns (`city`, `gender`, `healthcare_expenses`) stayed untagged.
 - **Propagation is conservative.** Derived columns (`full_name`, `ssn_last4`, `ssn_hash`) and aggregates (`gold.demographics.race`) inherit the tag. A hash computed in the pipeline gets masked too. To release a derived column, change the policy (e.g. pseudonymize it), not the tag.
-- **Pitfall: a CTAS run by a masked user physically writes `***`.** That is what happened to `bronze.patients_v2` and to the first silver/gold run: `ssn_hash` ended up with 1 distinct value across 1,163 rows. That is why the `synthea_pipeline` group is in `EXCEPT`. After the old `PII_policy` was dropped, silver and gold were rebuilt with intact data (1,163 distinct hashes), and tags stayed at 33/33 after `CREATE OR REPLACE`.
+- **Pitfall: a CTAS run by a masked user physically writes `***`.** That is what happened to an early `bronze.patients_v2` and to the first silver/gold run: `ssn_hash` ended up with 1 distinct value across 1,163 rows. That is why the `synthea_pipeline` group is in `EXCEPT`. After the old `PII_policy` was dropped, silver and gold were rebuilt with intact data (1,163 distinct hashes), and tags stayed at 33/33 after `CREATE OR REPLACE`.
 - **`EXCEPT synthea_pipeline` is enough on its own.** With all 4 policies active, the `synthea_medallion` job ran as a user who was a member **only** of `synthea_pipeline` (`is_account_group_member()` false for the 3 reader groups). Result: 1,163 distinct hashes, 6 races, 887 passports, no `***` written and no missing tags.
 - **Propagation also works from jobs:** bundle SQL tasks on a serverless warehouse propagate just like ad hoc queries.
+- **Same pitfall under the analyst role (2026-11-08).** With the `synthea_analysts` role assumed, `CREATE TABLE ... AS SELECT * FROM bronze.patients` (and from an admin-built clean copy) stored SSN and names as SHA-256 and `RACE`/`PASSPORT` as `NULL` in all 1,163 rows. An admin now reads hashes and nulls from that table. Tags still propagated (9 column/tag pairs), so an analyst reading the copy gets a hash of the hash, and joining it back to bronze on `SSN` matches 0 rows (computed with `mask_pseudonymize`, not yet run under the role). Analysts had `CREATE TABLE` on the whole catalog, so the copies landed in bronze; `05_grants.sql` now limits them to `synthea.test`, where `test.patients_v2..v4` keep the evidence. This also shows that catalog-level ABAC policies apply to an assumed role.
