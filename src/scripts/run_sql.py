@@ -16,6 +16,7 @@ Variables: ${catalog} and ${var} are replaced via --var key=value.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -47,6 +48,20 @@ def render(sql: str, variables: dict[str, str]) -> str:
         return variables[key]
 
     return re.sub(r"\$\{(\w+)\}", sub, sql)
+
+
+def expand_paths(patterns: list[str]) -> list[Path]:
+    """Expands wildcards here: PowerShell/cmd pass `*.sql` through literally (bash expands it first)."""
+    out: list[Path] = []
+    for p in patterns:
+        if any(c in p for c in "*?["):
+            matches = sorted(glob.glob(p))
+            if not matches:
+                sys.exit(f"No files match: {p}")
+            out.extend(Path(m) for m in matches)
+        else:
+            out.append(Path(p))
+    return out
 
 
 def pick_warehouse(w: WorkspaceClient) -> str:
@@ -96,7 +111,7 @@ def print_table(cols: list[str], rows: list[list], limit: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("files", nargs="*", type=Path)
+    ap.add_argument("files", nargs="*", help="SQL files; wildcards like silver/*.sql are expanded in any shell")
     ap.add_argument("-q", "--query")
     ap.add_argument("-p", "--profile", default=os.environ.get("DATABRICKS_PROFILE", "synthea"))
     ap.add_argument("--var", action="append", default=[], help="key=value")
@@ -111,7 +126,7 @@ def main() -> None:
         variables[k] = v
 
     # files first, ad hoc query last (handy for validating what the files created)
-    sources: list[tuple[str, str]] = [(str(f), f.read_text(encoding="utf-8")) for f in args.files]
+    sources: list[tuple[str, str]] = [(str(f), f.read_text(encoding="utf-8")) for f in expand_paths(args.files)]
     if args.query:
         sources.append(("<query>", args.query))
     if not sources:

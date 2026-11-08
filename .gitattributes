@@ -1,0 +1,3 @@
+# Keep shell scripts LF even on Windows checkouts (core.autocrlf=true),
+# so they run from WSL / Git Bash without "$'\r': command not found".
+*.sh text eol=lf

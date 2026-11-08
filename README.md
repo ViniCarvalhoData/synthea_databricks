@@ -8,27 +8,125 @@ A PII governance lab on Databricks using [Synthea](https://synthetichealth.githu
 
 ## Setup
 
+Two tools are needed: the [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install) (auth, bundle) and [uv](https://docs.astral.sh/uv/) (runs `run_sql.py` with its dependencies, no virtualenv to manage). The workspace host is never stored in the repo: it lives in the `synthea` profile of your `~/.databrickscfg`, which both `run_sql.py` and the bundle read.
+
+### Windows (PowerShell)
+
 ```powershell
-winget install Databricks.DatabricksCLI   # CLI
-winget install astral-sh.uv               # Python runner
+winget install Databricks.DatabricksCLI
+winget install astral-sh.uv
+# open a new terminal so both are on PATH, then:
+git clone https://github.com/<you>/synthea_databricks.git
+cd synthea_databricks
 databricks auth login --host https://<your-workspace>.cloud.databricks.com --profile synthea
+```
+
+The profile is saved to `%USERPROFILE%\.databrickscfg`. The bash script used for personas (`src/tests/run_personas.sh`) needs **Git Bash** (ships with Git for Windows) or WSL. Do not call it with `bash` from PowerShell: that may launch WSL's bash, which has its own PATH and its own `~/.databrickscfg`.
+
+### WSL (Ubuntu)
+
+```bash
+sudo apt update && sudo apt install -y curl git unzip
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sudo sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc   # puts uv on PATH (or open a new shell)
+
+# clone inside the Linux filesystem (~), not under /mnt/c: much faster, and away from OneDrive sync
+cd ~ && git clone https://github.com/<you>/synthea_databricks.git
+cd synthea_databricks
+databricks auth login --host https://<your-workspace>.cloud.databricks.com --profile synthea
+```
+
+- WSL has its own `~/.databrickscfg`, separate from Windows: log in (and create the persona profiles) in each environment you use.
+- If no browser opens during `auth login`, copy the URL the CLI prints into your Windows browser. WSL2 forwards the `localhost` callback, so the login completes.
+- `setup_identities.ps1` needs PowerShell 7 (`pwsh`) on Linux. You only need it with Account Console access (see "Create the groups" below).
+
+## Workspace preparation (once)
+
+Everything below works on [Databricks Free Edition](https://www.databricks.com/learn/free-edition). Do it in this order: the governance scripts expect the data, the tags and the groups to already exist.
+
+### 1. Get the Synthea data
+
+[Synthea](https://synthetichealth.github.io/synthea/) generates realistic but fully synthetic patient records, so no real person's data is involved. You can get it in either of two ways:
+
+- **Download a ready-made sample:** the [Synthea downloads page](https://synthea.mitre.org/downloads) has CSV datasets. The ~1K-patient CSV sample is enough.
+- **Generate your own:** follow [Basic Setup and Running](https://github.com/synthetichealth/synthea/wiki/Basic-Setup-and-Running). With Java 17+ installed, download `synthea-with-dependencies.jar` and run `java -jar synthea-with-dependencies.jar -p 1000 --exporter.csv.export=true`. The CSVs land in `output/csv/`.
+
+The lab only uses **`patients.csv`**, **`encounters.csv`** and **`providers.csv`**.
+
+### 2. Create the catalog and load bronze
+
+In the SQL editor, connected to a serverless SQL warehouse:
+
+```sql
+CREATE CATALOG IF NOT EXISTS synthea;
+CREATE SCHEMA  IF NOT EXISTS synthea.bronze;
+CREATE SCHEMA  IF NOT EXISTS synthea.silver;
+CREATE SCHEMA  IF NOT EXISTS synthea.gold;
+CREATE SCHEMA  IF NOT EXISTS synthea.governance;
+CREATE VOLUME  IF NOT EXISTS synthea.bronze.raw;
+```
+
+Upload the three CSVs to the volume, either in the UI (**Catalog > synthea > bronze > raw > Upload to this volume**) or with the CLI:
+
+```bash
+databricks fs cp patients.csv   dbfs:/Volumes/synthea/bronze/raw/ --profile synthea
+databricks fs cp encounters.csv dbfs:/Volumes/synthea/bronze/raw/ --profile synthea
+databricks fs cp providers.csv  dbfs:/Volumes/synthea/bronze/raw/ --profile synthea
+```
+
+Then create the bronze tables, keeping Synthea's original column names (`Id`, `SSN`, `FIRST`, ...), since the scripts rely on them:
+
+```sql
+CREATE TABLE IF NOT EXISTS synthea.bronze.patients AS
+SELECT * FROM read_files('/Volumes/synthea/bronze/raw/patients.csv', format => 'csv', header => true);
+
+CREATE TABLE IF NOT EXISTS synthea.bronze.encounters AS
+SELECT * FROM read_files('/Volumes/synthea/bronze/raw/encounters.csv', format => 'csv', header => true);
+
+CREATE TABLE IF NOT EXISTS synthea.bronze.providers AS
+SELECT * FROM read_files('/Volumes/synthea/bronze/raw/providers.csv', format => 'csv', header => true);
+```
+
+### 3. Create the governed tags
+
+In **Catalog > Govern > Governed tags** (see [governed tags](https://docs.databricks.com/aws/en/admin/governed-tags/)), create these two tags with the allowed value `true`, and turn on [tag propagation](https://docs.databricks.com/aws/en/admin/governed-tags/tag-propagation) for both:
+
+- `sap.PersonalData.isPotentiallyPersonal`: personal identifiers (name, SSN, address, ...)
+- `sap.PersonalData.isPotentiallySensitive`: sensitive data (race, ethnicity, ...)
+
+### 4. Create the groups
+
+Free Edition has no account API, so create the groups in the UI (**Settings > Identity and access > Groups**):
+
+| Group | Purpose |
+|---|---|
+| `synthea_pipeline` | builds silver/gold; exempt from every mask. **Add yourself to it**, or the pipeline writes `***` into the tables |
+| `synthea_pii_readers` | sees personal columns in the clear |
+| `synthea_sensitive_readers` | sees sensitive columns in the clear |
+| `synthea_analysts` | sees personal columns pseudonymized (SHA-256) |
+
+With Account Console access (not available on Free Edition), `src/scripts/setup_identities.ps1` creates the groups and a pipeline service principal for you:
+
+```bash
+# Windows
+powershell -ExecutionPolicy Bypass -File ./src/scripts/setup_identities.ps1 -WorkspaceId <workspace-id>
+# WSL
+pwsh ./src/scripts/setup_identities.ps1 -WorkspaceId <workspace-id>
 ```
 
 ## Workflow
 
-```powershell
-# 1. identities (once)
-#    Free Edition has no account API access -> create the synthea_* groups in the UI
-#    (Settings > Identity and access > Groups). With Account Console access:
-powershell -ExecutionPolicy Bypass -File ./src/scripts/setup_identities.ps1 -WorkspaceId <workspace-id>
+The `uv run` commands are the same in PowerShell, Git Bash and WSL. `run_sql.py` expands wildcards like `silver/*.sql` itself, because PowerShell passes them through unexpanded.
 
-# 2. governance: bronze tags, functions, policies
+```bash
+# 1. governance: bronze tags, functions, policies
 uv run src/scripts/run_sql.py src/governance/10_tags_bronze.sql src/governance/20_functions.sql src/governance/30_policies.sql
 
-# 3. medallion (run as an identity that is a member of synthea_pipeline!)
+# 2. medallion (run as an identity that is a member of synthea_pipeline!)
 uv run src/scripts/run_sql.py src/transformations/silver/*.sql src/transformations/gold/*.sql
 
-# 4. tests
+# 3. tests
 uv run src/scripts/run_sql.py src/tests/10_propagation.sql   # expected vs. actual tags (fails if any is missing)
 uv run src/scripts/run_sql.py src/tests/20_masking.sql       # what the current persona sees
 ```
@@ -66,7 +164,13 @@ A group can be assumed as a **role** ([Switch roles](https://docs.databricks.com
 ```bash
 databricks auth login --host https://<your-workspace>.cloud.databricks.com --profile synthea-as-analysts
 # same for: synthea-as-pii_readers, synthea-as-sensitive_readers, synthea-as-pipeline
-bash src/tests/run_personas.sh   # persona x column type matrix
+```
+
+Then run the persona x column type matrix from a bash shell. On Windows, use Git Bash. On WSL, use your regular terminal, and create the profiles inside WSL first:
+
+```bash
+bash src/tests/run_personas.sh
+PROFILES="synthea synthea-as-analysts" bash src/tests/run_personas.sh   # subset of personas
 ```
 
 With a role assumed, `current_user()` returns the group name and `is_account_group_member('<the role itself>')` returns **false**. Mask functions must check both (see `mask_requires_pii_and_sensitive`).
